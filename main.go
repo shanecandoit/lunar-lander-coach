@@ -1,12 +1,17 @@
 package main
 
 import (
+	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"image/color"
 	"log"
 	"math"
 	mrand "math/rand"
+	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
@@ -160,6 +165,7 @@ type Game struct {
 	summaryShown bool
 	summaryLines []string
 	step         int
+	saved        bool
 }
 
 func NewGame(n int) *Game {
@@ -488,6 +494,14 @@ func (g *Game) Draw(screen *ebiten.Image) {
 				allFinished = false
 			}
 		}
+		// save generation data (CSV + weights) once
+		if !g.saved {
+			if err := g.saveGenerationData(scores); err != nil {
+				log.Printf("error saving generation data: %v", err)
+			} else {
+				g.saved = true
+			}
+		}
 	}
 
 	ebitenutil.DebugPrintAt(screen, fmt.Sprintf("Agents: %d  Landed: %d  Crashed: %d  BestScore: %.2f  P: pause", len(g.agents), landedCount, crashedCount, best), 8, 8)
@@ -507,7 +521,98 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	}
 }
 
-func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) { return screenWidth, screenHeight }
+func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {
+	return screenWidth, screenHeight
+}
+
+// saveGenerationData writes a CSV with per-agent state and a JSON file
+// containing all agents' network weights. Filenames are timestamped.
+func (g *Game) saveGenerationData(scores []float64) error {
+	if err := os.MkdirAll("data", 0o755); err != nil {
+		return err
+	}
+	ts := time.Now().Format("2006-01-02_15-04-05")
+
+	// CSV
+	csvPath := filepath.Join("data", ts+".csv")
+	cf, err := os.Create(csvPath)
+	if err != nil {
+		return err
+	}
+	defer cf.Close()
+	w := csv.NewWriter(cf)
+	defer w.Flush()
+	// header
+	if err := w.Write([]string{"idx", "x", "y", "vx", "vy", "angle", "landed", "crashed", "killed", "score"}); err != nil {
+		return err
+	}
+	for i, a := range g.agents {
+		s := "0"
+		if i < len(scores) {
+			s = strconv.FormatFloat(scores[i], 'f', 6, 64)
+		}
+		row := []string{
+			strconv.Itoa(i),
+			strconv.FormatFloat(a.x, 'f', 6, 64),
+			strconv.FormatFloat(a.y, 'f', 6, 64),
+			strconv.FormatFloat(a.vx, 'f', 6, 64),
+			strconv.FormatFloat(a.vy, 'f', 6, 64),
+			strconv.FormatFloat(a.angle, 'f', 6, 64),
+			strconv.FormatBool(a.landed),
+			strconv.FormatBool(a.crashed),
+			strconv.FormatBool(a.killed),
+			s,
+		}
+		if err := w.Write(row); err != nil {
+			return err
+		}
+	}
+
+	// Weights JSON
+	best := 0.0
+	for _, v := range scores {
+		if v > best {
+			best = v
+		}
+	}
+	scoreStr := fmt.Sprintf("%.3f", best)
+	weightsPath := filepath.Join("data", fmt.Sprintf("weights_%s_%s.json", ts, scoreStr))
+
+	type savedAgent struct {
+		Index   int             `json:"index"`
+		Nets    [4]*nn.NNModule `json:"nets"`
+		Score   float64         `json:"score"`
+		Landed  bool            `json:"landed"`
+		Crashed bool            `json:"crashed"`
+		Killed  bool            `json:"killed"`
+	}
+	sa := make([]savedAgent, 0, len(g.agents))
+	for i, a := range g.agents {
+		sc := 0.0
+		if i < len(scores) {
+			sc = scores[i]
+		}
+		sa = append(sa, savedAgent{Index: i, Nets: aPolicyNets(a.policy), Score: sc, Landed: a.landed, Crashed: a.crashed, Killed: a.killed})
+	}
+
+	jb, err := json.MarshalIndent(sa, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(weightsPath, jb, 0o644); err != nil {
+		return err
+	}
+	return nil
+}
+
+// aPolicyNets attempts to extract the 4 nets from a Policy if it's an NNPolicy.
+func aPolicyNets(p Policy) [4]*nn.NNModule {
+	var out [4]*nn.NNModule
+	if np, ok := p.(*NNPolicy); ok {
+		out = np.Nets
+	}
+	return out
+}
 
 func main() {
 	ebiten.SetWindowSize(screenWidth, screenHeight)
