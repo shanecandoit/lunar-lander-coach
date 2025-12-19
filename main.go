@@ -232,7 +232,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		crashedRatio = float64(crashedCount) / total
 		killedRatio = float64(killedCount) / total
 	}
-	ebitenutil.DebugPrintAt(screen, fmt.Sprintf("Gen:%d  Agents:%d  Landed:%d  Crashed:%d(%.0f%%)  Killed:%d(%.0f%%)  BestScore:%.2f  P: pause", g.generation, len(g.agents), landedCount, crashedCount, crashedRatio*100.0, killedCount, killedRatio*100.0, best), 8, 8)
+	ebitenutil.DebugPrintAt(screen, fmt.Sprintf("Gen:%d  Agents:%d  Landed:%d (%d)  Crashed:%d(%.0f%%)  Killed:%d(%.0f%%)  BestScore:%.2f  P: pause", g.generation, len(g.agents), landedCount, g.totalLanded, crashedCount, crashedRatio*100.0, killedCount, killedRatio*100.0, best), 8, 8)
 
 	// Calculate total landed percentage
 	landedPercent := 0.0

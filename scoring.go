@@ -16,24 +16,44 @@ func agentScore(a *Agent, env Environment) float64 {
 	if a.killed {
 		return 0.0
 	}
+
+	// Calculate distance from ideal landing position
 	posErr := math.Abs(a.x - env.PadX)
+
+	// For vertical position, penalize being far from ground
+	groundY := float64(screenHeight - env.GroundHeight)
+	heightAboveGround := groundY - a.y
+
+	// Velocity error (magnitude)
 	velErr := math.Hypot(a.vx, a.vy)
+
+	// Angle error (radians, normalized)
 	angErr := math.Abs(normalizeAngle(a.angle))
 
-	posSigma := env.PadWidth / 6.0
+	// Scale parameters (tunable)
+	posSigma := env.PadWidth / 6.0 // horizontal position tolerance
 	if posSigma <= 0 {
 		posSigma = 10.0
 	}
-	velSigma := 0.8
-	angSigma := 0.25
+	heightSigma := 50.0 // vertical position tolerance
+	velSigma := 0.8     // velocity tolerance
+	angSigma := 0.25    // angle tolerance
 
-	p := math.Exp(-0.5 * ((posErr/posSigma)*(posErr/posSigma) + (velErr/velSigma)*(velErr/velSigma) + (angErr/angSigma)*(angErr/angSigma)))
-	if !a.landed {
-		p *= 0.01
+	// Gaussian-like score based on proximity to ideal state
+	p := math.Exp(-0.5 * ((posErr/posSigma)*(posErr/posSigma) +
+		(heightAboveGround/heightSigma)*(heightAboveGround/heightSigma) +
+		(velErr/velSigma)*(velErr/velSigma) +
+		(angErr/angSigma)*(angErr/angSigma)))
+
+	// Landed agents get a significant bonus
+	baseScore := 100.0 * p
+	if a.landed {
+		baseScore += 50.0 // bonus for successful landing
 	}
+
 	// Add coin bonuses: +1 for green, -1 for red
 	coinBonus := float64(a.greenCoins - a.redCoins)
-	return 100.0*p + coinBonus
+	return baseScore + coinBonus
 }
 
 func computeStats(xs []float64) (mean, max, min, std, variance float64) {
