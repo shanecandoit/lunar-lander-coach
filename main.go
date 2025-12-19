@@ -65,8 +65,8 @@ type NNPolicy struct {
 	Nets [4]*nn.NNModule // 4 heads producing logits for actions: nop, main, right, left
 }
 
-// Decide maps a single scalar input (normalized horizontal error)
-// into thrust and rotation decisions using the two networks.
+// Decide maps the 8-element state into a 4-way action distribution and returns
+// a selected discrete action mapped to (thrust, rotate).
 func (p *NNPolicy) Decide(l *Lander, env Environment) (bool, float64) {
 	// compute an 8-element state feature vector
 	groundY := float64(screenHeight - env.GroundHeight)
@@ -186,10 +186,10 @@ func NewGame(n int) *Game {
 	}
 
 	g := &Game{
-		env:      env,
-		bodyImg:  body,
-		flameImg: flame,
-		step:     0,
+		env:        env,
+		bodyImg:    body,
+		flameImg:   flame,
+		step:       0,
 		generation: 1,
 	}
 
@@ -507,7 +507,8 @@ func (g *Game) Draw(screen *ebiten.Image) {
 			} else {
 				g.saved = true
 				// evolve population and start next generation
-				g.evolvePopulation(10, 0.08, 0.2)
+				// preserve ~10% elites; use mutation rate 8% and smaller mutation scale 0.05
+				g.evolvePopulation(0.08, 0.05)
 			}
 		}
 	}
@@ -631,10 +632,10 @@ func (g *Game) saveGenerationData(scores []float64) error {
 }
 
 // evolvePopulation creates a new generation from the current agents.
-// eliteCount: number of top agents copied directly.
+// It preserves ~10% elites (exact clones) and fills the rest via crossover+mutation.
 // mutationRate: per-parameter mutation probability.
 // mutationScale: mutation amplitude.
-func (g *Game) evolvePopulation(eliteCount int, mutationRate, mutationScale float32) {
+func (g *Game) evolvePopulation(mutationRate, mutationScale float32) {
 	// compute scores and indices
 	n := len(g.agents)
 	scores := make([]float64, n)
@@ -651,25 +652,21 @@ func (g *Game) evolvePopulation(eliteCount int, mutationRate, mutationScale floa
 	}
 	sort.Slice(es, func(i, j int) bool { return es[i].score > es[j].score })
 
+	// determine elite count as ~10% of population
+	eliteCount := n / 10
 	if eliteCount < 1 {
 		eliteCount = 1
 	}
-	if eliteCount > n {
-		eliteCount = n
-	}
 
-	// collect elites
+	// collect elites (exact clones, no mutation)
 	elites := make([]*NNPolicy, 0, eliteCount)
 	for i := 0; i < eliteCount; i++ {
 		idx := es[i].idx
 		if np, ok := g.agents[idx].policy.(*NNPolicy); ok {
-			// clone nets
 			var nets [4]*nn.NNModule
 			for j := 0; j < 4; j++ {
 				if np.Nets[j] != nil {
-					c := &nn.NNModule{}
-					c = cloneNN(np.Nets[j])
-					nets[j] = c
+					nets[j] = cloneNN(np.Nets[j])
 				}
 			}
 			elites = append(elites, &NNPolicy{Nets: nets})
@@ -678,24 +675,46 @@ func (g *Game) evolvePopulation(eliteCount int, mutationRate, mutationScale floa
 
 	r := mrand.New(mrand.NewSource(time.Now().UnixNano()))
 
-	// helper to pick parent
+	// tournament selection from top half (to keep selection pressure but preserve diversity)
+	topK := n / 2
+	if topK < 2 {
+		topK = 2
+	}
+	tournamentSize := 3
 	pickParent := func() *NNPolicy {
-		return elites[r.Intn(len(elites))]
+		// pick tournamentSize random candidates from topK and return best
+		bestIdx := -1
+		bestScore := math.Inf(-1)
+		for t := 0; t < tournamentSize; t++ {
+			ri := r.Intn(topK)
+			cand := es[ri]
+			if cand.score > bestScore {
+				bestScore = cand.score
+				bestIdx = cand.idx
+			}
+		}
+		if bestIdx >= 0 {
+			if np, ok := g.agents[bestIdx].policy.(*NNPolicy); ok {
+				// return a clone to avoid aliasing
+				var nets [4]*nn.NNModule
+				for j := 0; j < 4; j++ {
+					if np.Nets[j] != nil {
+						nets[j] = cloneNN(np.Nets[j])
+					}
+				}
+				return &NNPolicy{Nets: nets}
+			}
+		}
+		// fallback: random new nets
+		return &NNPolicy{Nets: [4]*nn.NNModule{nn.NewRandomNN(), nn.NewRandomNN(), nn.NewRandomNN(), nn.NewRandomNN()}}
 	}
 
 	// build new population
 	newAgents := make([]*Agent, 0, n)
-	// copy elites (possibly mutated slightly)
+	// copy elites (exact)
 	for i := 0; i < len(elites); i++ {
-		nets := elites[i].Nets
-		// small mutation to maintain diversity
-		for j := 0; j < 4; j++ {
-			if nets[j] != nil {
-				nets[j].Mutate(mutationRate, mutationScale)
-			}
-		}
 		pos := Lander{x: r.Float64()*float64(screenWidth-40) + 20, y: r.Float64()*100 + 20}
-		newAgents = append(newAgents, &Agent{Lander: pos, policy: &NNPolicy{Nets: nets}})
+		newAgents = append(newAgents, &Agent{Lander: pos, policy: elites[i]})
 	}
 
 	// fill rest with children
@@ -708,9 +727,7 @@ func (g *Game) evolvePopulation(eliteCount int, mutationRate, mutationScale floa
 			bNet := p2.Nets[j]
 			if aNet == nil && bNet == nil {
 				childNets[j] = nn.NewRandomNN()
-				continue
-			}
-			if aNet == nil {
+			} else if aNet == nil {
 				childNets[j] = cloneNN(bNet)
 			} else if bNet == nil {
 				childNets[j] = cloneNN(aNet)
@@ -718,7 +735,9 @@ func (g *Game) evolvePopulation(eliteCount int, mutationRate, mutationScale floa
 				childNets[j] = nn.Crossover(aNet, bNet)
 			}
 			// mutate child
-			childNets[j].Mutate(mutationRate, mutationScale)
+			if childNets[j] != nil {
+				childNets[j].Mutate(mutationRate, mutationScale)
+			}
 		}
 		pos := Lander{x: r.Float64()*float64(screenWidth-40) + 20, y: r.Float64()*100 + 20}
 		newAgents = append(newAgents, &Agent{Lander: pos, policy: &NNPolicy{Nets: childNets}})
