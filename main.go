@@ -166,6 +166,7 @@ type Game struct {
 	summaryLines []string
 	step         int
 	saved        bool
+	generation   int
 }
 
 func NewGame(n int) *Game {
@@ -189,6 +190,7 @@ func NewGame(n int) *Game {
 		bodyImg:  body,
 		flameImg: flame,
 		step:     0,
+		generation: 1,
 	}
 
 	// spawn agents with varied starting positions and random policies
@@ -416,12 +418,16 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	// draw agents
 	landedCount := 0
 	crashedCount := 0
+	killedCount := 0
 	for _, a := range g.agents {
 		if a.landed {
 			landedCount++
 		}
 		if a.crashed {
 			crashedCount++
+		}
+		if a.killed {
+			killedCount++
 		}
 
 		if a.thrusting && !a.landed && !a.crashed {
@@ -506,7 +512,15 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		}
 	}
 
-	ebitenutil.DebugPrintAt(screen, fmt.Sprintf("Agents: %d  Landed: %d  Crashed: %d  BestScore: %.2f  P: pause", len(g.agents), landedCount, crashedCount, best), 8, 8)
+	// compute ratios
+	total := float64(len(g.agents))
+	crashedRatio := 0.0
+	killedRatio := 0.0
+	if total > 0 {
+		crashedRatio = float64(crashedCount) / total
+		killedRatio = float64(killedCount) / total
+	}
+	ebitenutil.DebugPrintAt(screen, fmt.Sprintf("Gen:%d  Agents:%d  Landed:%d  Crashed:%d(%.0f%%)  Killed:%d(%.0f%%)  BestScore:%.2f  P: pause", g.generation, len(g.agents), landedCount, crashedCount, crashedRatio*100.0, killedCount, killedRatio*100.0, best), 8, 8)
 
 	// when all agents have finished, prepare and show a summary table
 	if allFinished && !g.summaryShown {
@@ -715,8 +729,11 @@ func (g *Game) evolvePopulation(eliteCount int, mutationRate, mutationScale floa
 	// reset episode
 	g.step = 0
 	g.summaryShown = false
+	g.summaryLines = nil
 	// mark as not saved for new generation
 	g.saved = false
+	// advance generation counter
+	g.generation++
 }
 
 // cloneNN performs a deep copy of an NNModule.
