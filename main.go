@@ -24,7 +24,7 @@ const (
 	screenWidth     = 640
 	screenHeight    = 480
 	numAgents       = 100
-	episodeMaxSteps = 200
+	episodeMaxSteps = 400
 )
 
 // buildSummaryLines creates printable lines containing stats and top/bottom 10.
@@ -197,6 +197,9 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		}
 		// save generation data (CSV + weights) once
 		if !g.saved {
+			// Update running total of landed agents
+			g.totalLanded += landedCount
+
 			if err := g.saveGenerationData(scores); err != nil {
 				log.Printf("error saving generation data: %v", err)
 			} else {
@@ -217,7 +220,13 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		killedRatio = float64(killedCount) / total
 	}
 	ebitenutil.DebugPrintAt(screen, fmt.Sprintf("Gen:%d  Agents:%d  Landed:%d  Crashed:%d(%.0f%%)  Killed:%d(%.0f%%)  BestScore:%.2f  P: pause", g.generation, len(g.agents), landedCount, crashedCount, crashedRatio*100.0, killedCount, killedRatio*100.0, best), 8, 8)
-	ebitenutil.DebugPrintAt(screen, fmt.Sprintf("Coins: +%d  -%d  (L-click: green, R-click: red)", totalGreenCoins, totalRedCoins), 8, 460)
+
+	// Calculate total landed percentage
+	landedPercent := 0.0
+	if g.totalAgents > 0 {
+		landedPercent = float64(g.totalLanded) / float64(g.totalAgents) * 100.0
+	}
+	ebitenutil.DebugPrintAt(screen, fmt.Sprintf("Total Landed: %d / %d (%.2f%%)  Coins: +%d  -%d  (L-click: green, R-click: red)", g.totalLanded, g.totalAgents, landedPercent, totalGreenCoins, totalRedCoins), 8, 460)
 
 	// when all agents have finished, prepare and show a summary table
 	if allFinished && !g.summaryShown {
@@ -281,54 +290,79 @@ func (g *Game) saveGenerationData(scores []float64) error {
 		}
 	}
 
-	// Weights JSON
+	// Weights JSON for landed agents only
 	best := 0.0
 	for _, v := range scores {
 		if v > best {
 			best = v
 		}
 	}
-	scoreStr := fmt.Sprintf("%.3f", best)
-	weightsPath := filepath.Join("data", fmt.Sprintf("weights_%s_%s.json", ts, scoreStr))
 
 	type savedAgent struct {
-		Index   int             `json:"index"`
-		Nets    [4]*nn.NNModule `json:"nets"`
-		Score   float64         `json:"score"`
-		Landed  bool            `json:"landed"`
-		Crashed bool            `json:"crashed"`
-		Killed  bool            `json:"killed"`
-	}
-	sa := make([]savedAgent, 0, len(g.agents))
-	for i, a := range g.agents {
-		sc := 0.0
-		if i < len(scores) {
-			sc = scores[i]
-		}
-		sa = append(sa, savedAgent{Index: i, Nets: aPolicyNets(a.policy), Score: sc, Landed: a.landed, Crashed: a.crashed, Killed: a.killed})
+		Index      int             `json:"index"`
+		Nets       [4]*nn.NNModule `json:"nets"`
+		Score      float64         `json:"score"`
+		Landed     bool            `json:"landed"`
+		Crashed    bool            `json:"crashed"`
+		Killed     bool            `json:"killed"`
+		GreenCoins int             `json:"green_coins"`
+		RedCoins   int             `json:"red_coins"`
 	}
 
-	payload := struct {
-		Timestamp string       `json:"timestamp"`
-		BestScore float64      `json:"best_score"`
-		Agents    []savedAgent `json:"agents"`
-	}{
-		Timestamp: ts,
-		BestScore: best,
-		Agents:    sa,
+	// Collect only landed agents
+	landedAgents := make([]savedAgent, 0)
+	for i, a := range g.agents {
+		if a.landed {
+			sc := 0.0
+			if i < len(scores) {
+				sc = scores[i]
+			}
+			landedAgents = append(landedAgents, savedAgent{
+				Index:      i,
+				Nets:       aPolicyNets(a.policy),
+				Score:      sc,
+				Landed:     a.landed,
+				Crashed:    a.crashed,
+				Killed:     a.killed,
+				GreenCoins: a.greenCoins,
+				RedCoins:   a.redCoins,
+			})
+		}
 	}
-	jb, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		return err
+
+	// Only save if we have landed agents
+	if len(landedAgents) > 0 {
+		scoreStr := fmt.Sprintf("%.3f", best)
+		weightsPath := filepath.Join("data", fmt.Sprintf("landed_weights_%s_%s.json", ts, scoreStr))
+
+		payload := struct {
+			Timestamp    string       `json:"timestamp"`
+			Generation   int          `json:"generation"`
+			BestScore    float64      `json:"best_score"`
+			LandedCount  int          `json:"landed_count"`
+			LandedAgents []savedAgent `json:"landed_agents"`
+		}{
+			Timestamp:    ts,
+			Generation:   g.generation,
+			BestScore:    best,
+			LandedCount:  len(landedAgents),
+			LandedAgents: landedAgents,
+		}
+		jb, err := json.MarshalIndent(payload, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(weightsPath, jb, 0o644); err != nil {
+			return err
+		}
 	}
-	if err := os.WriteFile(weightsPath, jb, 0o644); err != nil {
-		return err
-	}
+
 	return nil
 }
 
 // evolvePopulation creates a new generation from the current agents.
 // It preserves ~10% elites (exact clones) and fills the rest via crossover+mutation.
+// Also maintains a hall of fame of top 10 champions across all generations.
 // mutationRate: per-parameter mutation probability.
 // mutationScale: mutation amplitude.
 func (g *Game) evolvePopulation(mutationRate, mutationScale float32) {
@@ -339,14 +373,38 @@ func (g *Game) evolvePopulation(mutationRate, mutationScale float32) {
 		scores[i] = agentScore(a, g.env)
 	}
 	type entry struct {
-		idx   int
-		score float64
+		idx    int
+		score  float64
+		policy *NNPolicy
 	}
 	es := make([]entry, 0, n)
 	for i, s := range scores {
-		es = append(es, entry{i, s})
+		var pol *NNPolicy
+		if np, ok := g.agents[i].policy.(*NNPolicy); ok {
+			pol = np
+		}
+		es = append(es, entry{i, s, pol})
 	}
 	sort.Slice(es, func(i, j int) bool { return es[i].score > es[j].score })
+
+	// Update hall of fame with best performers from this generation
+	for i := 0; i < 5 && i < len(es); i++ {
+		if es[i].policy != nil {
+			// Deep clone for hall of fame
+			var nets [4]*nn.NNModule
+			for j := 0; j < 4; j++ {
+				if es[i].policy.Nets[j] != nil {
+					nets[j] = cloneNN(es[i].policy.Nets[j])
+				}
+			}
+			champion := &NNPolicy{Nets: nets}
+			g.hallOfFame = append(g.hallOfFame, champion)
+		}
+	}
+	// Keep only top 10 in hall of fame
+	if len(g.hallOfFame) > 10 {
+		g.hallOfFame = g.hallOfFame[len(g.hallOfFame)-10:]
+	}
 
 	// determine elite count as ~10% of population
 	eliteCount := n / 10
@@ -357,12 +415,11 @@ func (g *Game) evolvePopulation(mutationRate, mutationScale float32) {
 	// collect elites (exact clones, no mutation)
 	elites := make([]*NNPolicy, 0, eliteCount)
 	for i := 0; i < eliteCount; i++ {
-		idx := es[i].idx
-		if np, ok := g.agents[idx].policy.(*NNPolicy); ok {
+		if es[i].policy != nil {
 			var nets [4]*nn.NNModule
 			for j := 0; j < 4; j++ {
-				if np.Nets[j] != nil {
-					nets[j] = cloneNN(np.Nets[j])
+				if es[i].policy.Nets[j] != nil {
+					nets[j] = cloneNN(es[i].policy.Nets[j])
 				}
 			}
 			elites = append(elites, &NNPolicy{Nets: nets})
@@ -407,8 +464,24 @@ func (g *Game) evolvePopulation(mutationRate, mutationScale float32) {
 
 	// build new population
 	newAgents := make([]*Agent, 0, n)
-	// copy elites (exact)
-	for i := 0; i < len(elites); i++ {
+
+	// First, add hall of fame champions (guaranteed to compete, never mutated)
+	for _, champ := range g.hallOfFame {
+		if len(newAgents) >= n {
+			break
+		}
+		var nets [4]*nn.NNModule
+		for j := 0; j < 4; j++ {
+			if champ.Nets[j] != nil {
+				nets[j] = cloneNN(champ.Nets[j])
+			}
+		}
+		pos := Lander{x: r.Float64()*float64(screenWidth-40) + 20, y: r.Float64()*100 + 20}
+		newAgents = append(newAgents, &Agent{Lander: pos, policy: &NNPolicy{Nets: nets}})
+	}
+
+	// Then add current generation elites (exact clones, no mutation)
+	for i := 0; i < len(elites) && len(newAgents) < n; i++ {
 		pos := Lander{x: r.Float64()*float64(screenWidth-40) + 20, y: r.Float64()*100 + 20}
 		newAgents = append(newAgents, &Agent{Lander: pos, policy: elites[i]})
 	}
@@ -453,6 +526,8 @@ func (g *Game) evolvePopulation(mutationRate, mutationScale float32) {
 	}
 	// advance generation counter
 	g.generation++
+	// update total agents counter
+	g.totalAgents += len(newAgents)
 }
 
 // cloneNN performs a deep copy of an NNModule.

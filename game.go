@@ -14,18 +14,22 @@ import (
 
 // Game holds world and rendered assets.
 type Game struct {
-	env      Environment
-	agents   []*Agent
-	coins    []Coin
-	paused   bool
-	bodyImg  *ebiten.Image
-	flameImg *ebiten.Image
+	env        Environment
+	agents     []*Agent
+	coins      []Coin
+	hallOfFame []*NNPolicy // top 10 champions across all generations, never mutated
+	paused     bool
+	bodyImg    *ebiten.Image
+	flameImg   *ebiten.Image
 	// summary display
 	summaryShown bool
 	summaryLines []string
 	step         int
 	saved        bool
 	generation   int
+	// running totals across all generations
+	totalLanded int
+	totalAgents int
 }
 
 func NewGame(n int) *Game {
@@ -45,11 +49,14 @@ func NewGame(n int) *Game {
 	}
 
 	g := &Game{
-		env:        env,
-		bodyImg:    body,
-		flameImg:   flame,
-		step:       0,
-		generation: 1,
+		env:         env,
+		bodyImg:     body,
+		flameImg:    flame,
+		step:        0,
+		generation:  1,
+		hallOfFame:  make([]*NNPolicy, 0, 10),
+		totalLanded: 0,
+		totalAgents: n,
 	}
 
 	seedBase := time.Now().UnixNano()
