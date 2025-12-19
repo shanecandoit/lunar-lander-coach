@@ -41,8 +41,9 @@ type Agent struct {
 	crashed    bool
 	killed     bool // true if removed for going off-camera (score = 0)
 	policy     Policy
-	greenCoins int // count of green coins collected
-	redCoins   int // count of red coins collected
+	greenCoins int  // count of green coins collected
+	redCoins   int  // count of red coins collected
+	isChampion bool // true if this agent is from hall of fame
 }
 
 // Coin represents a collectible in the world

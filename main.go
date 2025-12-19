@@ -157,6 +157,19 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		drawOp.GeoM.Translate(a.x, a.y)
 		drawOp.ColorM = cm
 		screen.DrawImage(g.bodyImg, drawOp)
+
+		// Draw blue border around champions
+		if a.isChampion {
+			borderImg := ebiten.NewImage(w+4, h+4)
+			borderImg.Fill(color.RGBA{50, 100, 255, 200})
+			borderOp := &ebiten.DrawImageOptions{}
+			borderOp.GeoM.Translate(-float64(w+4)/2, -float64(h+4)/2)
+			borderOp.GeoM.Rotate(a.angle)
+			borderOp.GeoM.Translate(a.x, a.y)
+			screen.DrawImage(borderImg, borderOp)
+			// Redraw the body on top
+			screen.DrawImage(g.bodyImg, drawOp)
+		}
 	}
 
 	// compute best score for display
@@ -477,7 +490,7 @@ func (g *Game) evolvePopulation(mutationRate, mutationScale float32) {
 			}
 		}
 		pos := Lander{x: r.Float64()*float64(screenWidth-40) + 20, y: r.Float64()*100 + 20}
-		newAgents = append(newAgents, &Agent{Lander: pos, policy: &NNPolicy{Nets: nets}})
+		newAgents = append(newAgents, &Agent{Lander: pos, policy: &NNPolicy{Nets: nets}, isChampion: true})
 	}
 
 	// Then add current generation elites (exact clones, no mutation)

@@ -147,7 +147,12 @@ func (g *Game) Update() error {
 
 		groundY := float64(screenHeight - g.env.GroundHeight)
 		if a.y >= groundY {
-			if math.Abs(a.vy) < 2.5 && math.Abs(a.vx) < 2.0 && math.Abs(normalizeAngle(a.angle)) < 0.5 {
+			// Check if within landing pad bounds
+			padLeft := g.env.PadX - g.env.PadWidth/2
+			padRight := g.env.PadX + g.env.PadWidth/2
+			onPad := a.x >= padLeft && a.x <= padRight
+
+			if math.Abs(a.vy) < 2.5 && math.Abs(a.vx) < 2.0 && math.Abs(normalizeAngle(a.angle)) < 0.5 && onPad {
 				a.landed = true
 				a.y = groundY
 				a.vx = 0
