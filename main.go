@@ -500,6 +500,8 @@ func (g *Game) Draw(screen *ebiten.Image) {
 				log.Printf("error saving generation data: %v", err)
 			} else {
 				g.saved = true
+				// evolve population and start next generation
+				g.evolvePopulation(10, 0.08, 0.2)
 			}
 		}
 	}
@@ -595,7 +597,16 @@ func (g *Game) saveGenerationData(scores []float64) error {
 		sa = append(sa, savedAgent{Index: i, Nets: aPolicyNets(a.policy), Score: sc, Landed: a.landed, Crashed: a.crashed, Killed: a.killed})
 	}
 
-	jb, err := json.MarshalIndent(sa, "", "  ")
+	payload := struct {
+		Timestamp string       `json:"timestamp"`
+		BestScore float64      `json:"best_score"`
+		Agents    []savedAgent `json:"agents"`
+	}{
+		Timestamp: ts,
+		BestScore: best,
+		Agents:    sa,
+	}
+	jb, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -603,6 +614,121 @@ func (g *Game) saveGenerationData(scores []float64) error {
 		return err
 	}
 	return nil
+}
+
+// evolvePopulation creates a new generation from the current agents.
+// eliteCount: number of top agents copied directly.
+// mutationRate: per-parameter mutation probability.
+// mutationScale: mutation amplitude.
+func (g *Game) evolvePopulation(eliteCount int, mutationRate, mutationScale float32) {
+	// compute scores and indices
+	n := len(g.agents)
+	scores := make([]float64, n)
+	for i, a := range g.agents {
+		scores[i] = agentScore(a, g.env)
+	}
+	type entry struct {
+		idx   int
+		score float64
+	}
+	es := make([]entry, 0, n)
+	for i, s := range scores {
+		es = append(es, entry{i, s})
+	}
+	sort.Slice(es, func(i, j int) bool { return es[i].score > es[j].score })
+
+	if eliteCount < 1 {
+		eliteCount = 1
+	}
+	if eliteCount > n {
+		eliteCount = n
+	}
+
+	// collect elites
+	elites := make([]*NNPolicy, 0, eliteCount)
+	for i := 0; i < eliteCount; i++ {
+		idx := es[i].idx
+		if np, ok := g.agents[idx].policy.(*NNPolicy); ok {
+			// clone nets
+			var nets [4]*nn.NNModule
+			for j := 0; j < 4; j++ {
+				if np.Nets[j] != nil {
+					c := &nn.NNModule{}
+					c = cloneNN(np.Nets[j])
+					nets[j] = c
+				}
+			}
+			elites = append(elites, &NNPolicy{Nets: nets})
+		}
+	}
+
+	r := mrand.New(mrand.NewSource(time.Now().UnixNano()))
+
+	// helper to pick parent
+	pickParent := func() *NNPolicy {
+		return elites[r.Intn(len(elites))]
+	}
+
+	// build new population
+	newAgents := make([]*Agent, 0, n)
+	// copy elites (possibly mutated slightly)
+	for i := 0; i < len(elites); i++ {
+		nets := elites[i].Nets
+		// small mutation to maintain diversity
+		for j := 0; j < 4; j++ {
+			if nets[j] != nil {
+				nets[j].Mutate(mutationRate, mutationScale)
+			}
+		}
+		pos := Lander{x: r.Float64()*float64(screenWidth-40) + 20, y: r.Float64()*100 + 20}
+		newAgents = append(newAgents, &Agent{Lander: pos, policy: &NNPolicy{Nets: nets}})
+	}
+
+	// fill rest with children
+	for len(newAgents) < n {
+		p1 := pickParent()
+		p2 := pickParent()
+		var childNets [4]*nn.NNModule
+		for j := 0; j < 4; j++ {
+			aNet := p1.Nets[j]
+			bNet := p2.Nets[j]
+			if aNet == nil && bNet == nil {
+				childNets[j] = nn.NewRandomNN()
+				continue
+			}
+			if aNet == nil {
+				childNets[j] = cloneNN(bNet)
+			} else if bNet == nil {
+				childNets[j] = cloneNN(aNet)
+			} else {
+				childNets[j] = nn.Crossover(aNet, bNet)
+			}
+			// mutate child
+			childNets[j].Mutate(mutationRate, mutationScale)
+		}
+		pos := Lander{x: r.Float64()*float64(screenWidth-40) + 20, y: r.Float64()*100 + 20}
+		newAgents = append(newAgents, &Agent{Lander: pos, policy: &NNPolicy{Nets: childNets}})
+	}
+
+	// replace population
+	g.agents = newAgents
+	// reset episode
+	g.step = 0
+	g.summaryShown = false
+	// mark as not saved for new generation
+	g.saved = false
+}
+
+// cloneNN performs a deep copy of an NNModule.
+func cloneNN(src *nn.NNModule) *nn.NNModule {
+	if src == nil {
+		return nil
+	}
+	dst := &nn.NNModule{}
+	dst.Bias1 = src.Bias1
+	dst.Bias2 = src.Bias2
+	dst.Weights = src.Weights
+	return dst
 }
 
 // aPolicyNets attempts to extract the 4 nets from a Policy if it's an NNPolicy.
