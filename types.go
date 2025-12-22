@@ -34,6 +34,20 @@ func (p *RandomPolicy) Decide(l *Lander, env Environment, distGreen, distRed flo
 	return thrust, rotate
 }
 
+// Rule represents a single rulebook rule: IF(inputIndex < someValue) THEN modify actionIndex
+type Rule struct {
+	InputIndex       int     // which input feature to check (0-9)
+	LessThan         bool    // true for <, false for >=
+	SomeValue        float64 // threshold value to compare against
+	ActionIndex      int     // which action to modify (0-3)
+	RelativeModifier float64 // modifier to add to action probability (-1 to 1)
+}
+
+// Rulebook is a collection of 32 rules
+type Rulebook struct {
+	Rules [32]Rule
+}
+
 type Agent struct {
 	Lander
 	thrusting  bool
@@ -41,9 +55,10 @@ type Agent struct {
 	crashed    bool
 	killed     bool // true if removed for going off-camera (score = 0)
 	policy     Policy
-	greenCoins int  // count of green coins collected
-	redCoins   int  // count of red coins collected
-	isChampion bool // true if this agent is from hall of fame
+	greenCoins int    // count of green coins collected
+	redCoins   int    // count of red coins collected
+	isChampion bool   // true if this agent is from hall of fame
+	agentType  string // "nn" or "rulebook"
 }
 
 // Coin represents a collectible in the world

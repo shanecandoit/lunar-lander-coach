@@ -140,13 +140,17 @@ func (g *Game) Draw(screen *ebiten.Image) {
 			screen.DrawImage(g.flameImg, fOp)
 		}
 
-		// color by state
+		// color by state and agent type
 		var cm ebiten.ColorM
 		if a.landed {
 			cm.Scale(0.6, 1.0, 0.6, 1)
 		} else if a.crashed {
 			cm.Scale(1.0, 0.5, 0.5, 1)
+		} else if a.agentType == "rulebook" {
+			// Orange color for rulebook agents
+			cm.Scale(1.0, 0.65, 0.2, 1)
 		} else {
+			// Default white for NN agents
 			cm.Scale(1, 1, 1, 1)
 		}
 
@@ -167,7 +171,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 			borderOp.GeoM.Rotate(a.angle)
 			borderOp.GeoM.Translate(a.x, a.y)
 			screen.DrawImage(borderImg, borderOp)
-			// Redraw the body on top
+			// Redraw the body on top with appropriate color
 			screen.DrawImage(g.bodyImg, drawOp)
 		}
 	}
@@ -376,15 +380,61 @@ func (g *Game) saveGenerationData(scores []float64) error {
 // evolvePopulation creates a new generation from the current agents.
 // It preserves ~10% elites (exact clones) and fills the rest via crossover+mutation.
 // Also maintains a hall of fame of top 10 champions across all generations.
+// Handles both NN and Rulebook agents separately.
 // mutationRate: per-parameter mutation probability.
 // mutationScale: mutation amplitude.
 func (g *Game) evolvePopulation(mutationRate, mutationScale float32) {
-	// compute scores and indices
-	n := len(g.agents)
+	// Separate NN and Rulebook agents
+	var nnAgents, rulebookAgents []*Agent
+	for _, a := range g.agents {
+		if a.agentType == "nn" {
+			nnAgents = append(nnAgents, a)
+		} else if a.agentType == "rulebook" {
+			rulebookAgents = append(rulebookAgents, a)
+		}
+	}
+
+	r := mrand.New(mrand.NewSource(time.Now().UnixNano()))
+	newAgents := make([]*Agent, 0, len(g.agents))
+
+	// Evolve NN agents
+	if len(nnAgents) > 0 {
+		newNNAgents := evolveNNAgents(g, nnAgents, r, mutationRate, mutationScale)
+		newAgents = append(newAgents, newNNAgents...)
+	}
+
+	// Evolve Rulebook agents
+	if len(rulebookAgents) > 0 {
+		newRulebookAgents := evolveRulebookAgents(g, rulebookAgents, r, mutationRate, mutationScale)
+		newAgents = append(newAgents, newRulebookAgents...)
+	}
+
+	// replace population
+	g.agents = newAgents
+	// reset episode
+	g.step = 0
+	g.summaryShown = false
+	g.summaryLines = nil
+	// mark as not saved for new generation
+	g.saved = false
+	// reset all coins for new generation
+	for i := range g.coins {
+		g.coins[i].collected = false
+	}
+	// advance generation counter
+	g.generation++
+	// update total agents counter
+	g.totalAgents += len(newAgents)
+}
+
+// evolveNNAgents handles evolution for NN agents
+func evolveNNAgents(g *Game, nnAgents []*Agent, r *mrand.Rand, mutationRate, mutationScale float32) []*Agent {
+	n := len(nnAgents)
 	scores := make([]float64, n)
-	for i, a := range g.agents {
+	for i, a := range nnAgents {
 		scores[i] = agentScore(a, g.env)
 	}
+
 	type entry struct {
 		idx    int
 		score  float64
@@ -393,7 +443,7 @@ func (g *Game) evolvePopulation(mutationRate, mutationScale float32) {
 	es := make([]entry, 0, n)
 	for i, s := range scores {
 		var pol *NNPolicy
-		if np, ok := g.agents[i].policy.(*NNPolicy); ok {
+		if np, ok := nnAgents[i].policy.(*NNPolicy); ok {
 			pol = np
 		}
 		es = append(es, entry{i, s, pol})
@@ -439,9 +489,7 @@ func (g *Game) evolvePopulation(mutationRate, mutationScale float32) {
 		}
 	}
 
-	r := mrand.New(mrand.NewSource(time.Now().UnixNano()))
-
-	// tournament selection from top half (to keep selection pressure but preserve diversity)
+	// tournament selection from top half
 	topK := n / 2
 	if topK < 2 {
 		topK = 2
@@ -460,7 +508,7 @@ func (g *Game) evolvePopulation(mutationRate, mutationScale float32) {
 			}
 		}
 		if bestIdx >= 0 {
-			if np, ok := g.agents[bestIdx].policy.(*NNPolicy); ok {
+			if np, ok := nnAgents[bestIdx].policy.(*NNPolicy); ok {
 				// return a clone to avoid aliasing
 				var nets [4]*nn.NNModule
 				for j := 0; j < 4; j++ {
@@ -475,7 +523,7 @@ func (g *Game) evolvePopulation(mutationRate, mutationScale float32) {
 		return &NNPolicy{Nets: [4]*nn.NNModule{nn.NewRandomNN(), nn.NewRandomNN(), nn.NewRandomNN(), nn.NewRandomNN()}}
 	}
 
-	// build new population
+	// build new NN population
 	newAgents := make([]*Agent, 0, n)
 
 	// First, add hall of fame champions (guaranteed to compete, never mutated)
@@ -490,13 +538,13 @@ func (g *Game) evolvePopulation(mutationRate, mutationScale float32) {
 			}
 		}
 		pos := Lander{x: r.Float64()*float64(screenWidth-40) + 20, y: r.Float64()*100 + 20}
-		newAgents = append(newAgents, &Agent{Lander: pos, policy: &NNPolicy{Nets: nets}, isChampion: true})
+		newAgents = append(newAgents, &Agent{Lander: pos, policy: &NNPolicy{Nets: nets}, isChampion: true, agentType: "nn"})
 	}
 
 	// Then add current generation elites (exact clones, no mutation)
 	for i := 0; i < len(elites) && len(newAgents) < n; i++ {
 		pos := Lander{x: r.Float64()*float64(screenWidth-40) + 20, y: r.Float64()*100 + 20}
-		newAgents = append(newAgents, &Agent{Lander: pos, policy: elites[i]})
+		newAgents = append(newAgents, &Agent{Lander: pos, policy: elites[i], agentType: "nn"})
 	}
 
 	// fill rest with children
@@ -522,25 +570,120 @@ func (g *Game) evolvePopulation(mutationRate, mutationScale float32) {
 			}
 		}
 		pos := Lander{x: r.Float64()*float64(screenWidth-40) + 20, y: r.Float64()*100 + 20}
-		newAgents = append(newAgents, &Agent{Lander: pos, policy: &NNPolicy{Nets: childNets}})
+		newAgents = append(newAgents, &Agent{Lander: pos, policy: &NNPolicy{Nets: childNets}, agentType: "nn"})
 	}
 
-	// replace population
-	g.agents = newAgents
-	// reset episode
-	g.step = 0
-	g.summaryShown = false
-	g.summaryLines = nil
-	// mark as not saved for new generation
-	g.saved = false
-	// reset all coins for new generation
-	for i := range g.coins {
-		g.coins[i].collected = false
+	return newAgents
+}
+
+// evolveRulebookAgents handles evolution for Rulebook agents
+func evolveRulebookAgents(g *Game, rulebookAgents []*Agent, r *mrand.Rand, mutationRate, mutationScale float32) []*Agent {
+	n := len(rulebookAgents)
+	scores := make([]float64, n)
+	for i, a := range rulebookAgents {
+		scores[i] = agentScore(a, g.env)
 	}
-	// advance generation counter
-	g.generation++
-	// update total agents counter
-	g.totalAgents += len(newAgents)
+
+	type entry struct {
+		idx    int
+		score  float64
+		policy *RulebookPolicy
+	}
+	es := make([]entry, 0, n)
+	for i, s := range scores {
+		var pol *RulebookPolicy
+		if rp, ok := rulebookAgents[i].policy.(*RulebookPolicy); ok {
+			pol = rp
+		}
+		es = append(es, entry{i, s, pol})
+	}
+	sort.Slice(es, func(i, j int) bool { return es[i].score > es[j].score })
+
+	// Update rulebook hall of fame with best performers from this generation
+	for i := 0; i < 5 && i < len(es); i++ {
+		if es[i].policy != nil {
+			rb := CloneRulebook(es[i].policy.Rulebook)
+			champion := &RulebookPolicy{Rulebook: rb}
+			g.rulebookHallOfFame = append(g.rulebookHallOfFame, champion)
+		}
+	}
+	// Keep only top 10 in hall of fame
+	if len(g.rulebookHallOfFame) > 10 {
+		g.rulebookHallOfFame = g.rulebookHallOfFame[len(g.rulebookHallOfFame)-10:]
+	}
+
+	// determine elite count as ~10% of population
+	eliteCount := n / 10
+	if eliteCount < 1 {
+		eliteCount = 1
+	}
+
+	// collect elites (exact clones, no mutation)
+	elites := make([]*RulebookPolicy, 0, eliteCount)
+	for i := 0; i < eliteCount; i++ {
+		if es[i].policy != nil {
+			rb := CloneRulebook(es[i].policy.Rulebook)
+			elites = append(elites, &RulebookPolicy{Rulebook: rb})
+		}
+	}
+
+	// tournament selection from top half
+	topK := n / 2
+	if topK < 2 {
+		topK = 2
+	}
+	tournamentSize := 3
+	pickParent := func() *RulebookPolicy {
+		bestIdx := -1
+		bestScore := math.Inf(-1)
+		for t := 0; t < tournamentSize; t++ {
+			ri := r.Intn(topK)
+			cand := es[ri]
+			if cand.score > bestScore {
+				bestScore = cand.score
+				bestIdx = cand.idx
+			}
+		}
+		if bestIdx >= 0 {
+			if rp, ok := rulebookAgents[bestIdx].policy.(*RulebookPolicy); ok {
+				rb := CloneRulebook(rp.Rulebook)
+				return &RulebookPolicy{Rulebook: rb}
+			}
+		}
+		// fallback: random new rulebook
+		return &RulebookPolicy{Rulebook: NewRandomRulebook()}
+	}
+
+	// build new rulebook population
+	newAgents := make([]*Agent, 0, n)
+
+	// First, add hall of fame champions (guaranteed to compete, never mutated)
+	for _, champ := range g.rulebookHallOfFame {
+		if len(newAgents) >= n {
+			break
+		}
+		rb := CloneRulebook(champ.Rulebook)
+		pos := Lander{x: r.Float64()*float64(screenWidth-40) + 20, y: r.Float64()*100 + 20}
+		newAgents = append(newAgents, &Agent{Lander: pos, policy: &RulebookPolicy{Rulebook: rb}, isChampion: true, agentType: "rulebook"})
+	}
+
+	// Then add current generation elites (exact clones, no mutation)
+	for i := 0; i < len(elites) && len(newAgents) < n; i++ {
+		pos := Lander{x: r.Float64()*float64(screenWidth-40) + 20, y: r.Float64()*100 + 20}
+		newAgents = append(newAgents, &Agent{Lander: pos, policy: elites[i], agentType: "rulebook"})
+	}
+
+	// fill rest with children
+	for len(newAgents) < n {
+		p1 := pickParent()
+		p2 := pickParent()
+		childRulebook := CrossoverRulebook(p1.Rulebook, p2.Rulebook)
+		MutateRulebook(&childRulebook, mutationRate, mutationScale)
+		pos := Lander{x: r.Float64()*float64(screenWidth-40) + 20, y: r.Float64()*100 + 20}
+		newAgents = append(newAgents, &Agent{Lander: pos, policy: &RulebookPolicy{Rulebook: childRulebook}, agentType: "rulebook"})
+	}
+
+	return newAgents
 }
 
 // cloneNN performs a deep copy of an NNModule.

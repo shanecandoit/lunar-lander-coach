@@ -14,13 +14,14 @@ import (
 
 // Game holds world and rendered assets.
 type Game struct {
-	env        Environment
-	agents     []*Agent
-	coins      []Coin
-	hallOfFame []*NNPolicy // top 10 champions across all generations, never mutated
-	paused     bool
-	bodyImg    *ebiten.Image
-	flameImg   *ebiten.Image
+	env                Environment
+	agents             []*Agent
+	coins              []Coin
+	hallOfFame         []*NNPolicy       // top 10 NN champions across all generations, never mutated
+	rulebookHallOfFame []*RulebookPolicy // top 10 rulebook champions across all generations, never mutated
+	paused             bool
+	bodyImg            *ebiten.Image
+	flameImg           *ebiten.Image
 	// summary display
 	summaryShown bool
 	summaryLines []string
@@ -49,27 +50,44 @@ func NewGame(n int) *Game {
 	}
 
 	g := &Game{
-		env:         env,
-		bodyImg:     body,
-		flameImg:    flame,
-		step:        0,
-		generation:  1,
-		hallOfFame:  make([]*NNPolicy, 0, 10),
-		totalLanded: 0,
-		totalAgents: n,
+		env:                env,
+		bodyImg:            body,
+		flameImg:           flame,
+		step:               0,
+		generation:         1,
+		hallOfFame:         make([]*NNPolicy, 0, 10),
+		rulebookHallOfFame: make([]*RulebookPolicy, 0, 10),
+		totalLanded:        0,
+		totalAgents:        n,
 	}
 
 	seedBase := time.Now().UnixNano()
+	// Create 100 NN agents
 	for i := 0; i < n; i++ {
 		rng := mrand.New(mrand.NewSource(seedBase + int64(i)*7919))
 		pos := Lander{x: rng.Float64()*float64(screenWidth-40) + 20, y: rng.Float64()*100 + 20}
 		a := &Agent{
-			Lander: pos,
-			policy: &NNPolicy{Nets: [4]*nn.NNModule{nn.NewRandomNN(), nn.NewRandomNN(), nn.NewRandomNN(), nn.NewRandomNN()}},
+			Lander:    pos,
+			policy:    &NNPolicy{Nets: [4]*nn.NNModule{nn.NewRandomNN(), nn.NewRandomNN(), nn.NewRandomNN(), nn.NewRandomNN()}},
+			agentType: "nn",
 		}
 		g.agents = append(g.agents, a)
 	}
 
+	// Create 100 rulebook agents
+	for i := 0; i < n; i++ {
+		rng := mrand.New(mrand.NewSource(seedBase + int64(n+i)*7919))
+		pos := Lander{x: rng.Float64()*float64(screenWidth-40) + 20, y: rng.Float64()*100 + 20}
+		rb := NewRandomRulebook()
+		a := &Agent{
+			Lander:    pos,
+			policy:    &RulebookPolicy{Rulebook: rb},
+			agentType: "rulebook",
+		}
+		g.agents = append(g.agents, a)
+	}
+
+	g.totalAgents = len(g.agents)
 	return g
 }
 
