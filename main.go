@@ -89,6 +89,14 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	pOp.GeoM.Translate(g.env.PadX-g.env.PadWidth/2, float64(screenHeight-g.env.GroundHeight-8))
 	screen.DrawImage(pad, pOp)
 
+	// draw spawn point marker (S)
+	spawnMarker := ebiten.NewImage(16, 16)
+	spawnMarker.Fill(color.RGBA{255, 255, 0, 180}) // Yellow translucent
+	sOp := &ebiten.DrawImageOptions{}
+	sOp.GeoM.Translate(g.spawnPoint.x-8, g.spawnPoint.y-8)
+	screen.DrawImage(spawnMarker, sOp)
+	ebitenutil.DebugPrintAt(screen, "S", int(g.spawnPoint.x)-3, int(g.spawnPoint.y)-7)
+
 	// draw coins
 	for _, c := range g.coins {
 		coinImg := ebiten.NewImage(8, 8)
@@ -236,7 +244,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		crashedRatio = float64(crashedCount) / total
 		killedRatio = float64(killedCount) / total
 	}
-	ebitenutil.DebugPrintAt(screen, fmt.Sprintf("Gen:%d  Agents:%d  Landed:%d (%d)  Crashed:%d(%.0f%%)  Killed:%d(%.0f%%)  BestScore:%.2f  P: pause", g.generation, len(g.agents), landedCount, g.totalLanded, crashedCount, crashedRatio*100.0, killedCount, killedRatio*100.0, best), 8, 8)
+	ebitenutil.DebugPrintAt(screen, fmt.Sprintf("Gen:%d  Agents:%d  Landed:%d (%d)  Crashed:%d(%.0f%%)  Killed:%d(%.0f%%)  BestScore:%.2f  P: pause  Middle-click: move spawn", g.generation, len(g.agents), landedCount, g.totalLanded, crashedCount, crashedRatio*100.0, killedCount, killedRatio*100.0, best), 8, 8)
 
 	// Calculate total landed percentage
 	landedPercent := 0.0
@@ -537,14 +545,12 @@ func evolveNNAgents(g *Game, nnAgents []*Agent, r *mrand.Rand, mutationRate, mut
 				nets[j] = cloneNN(champ.Nets[j])
 			}
 		}
-		pos := Lander{x: r.Float64()*float64(screenWidth-40) + 20, y: r.Float64()*100 + 20}
-		newAgents = append(newAgents, &Agent{Lander: pos, policy: &NNPolicy{Nets: nets}, isChampion: true, agentType: "nn"})
+		newAgents = append(newAgents, &Agent{Lander: g.spawnPoint, policy: &NNPolicy{Nets: nets}, isChampion: true, agentType: "nn"})
 	}
 
 	// Then add current generation elites (exact clones, no mutation)
 	for i := 0; i < len(elites) && len(newAgents) < n; i++ {
-		pos := Lander{x: r.Float64()*float64(screenWidth-40) + 20, y: r.Float64()*100 + 20}
-		newAgents = append(newAgents, &Agent{Lander: pos, policy: elites[i], agentType: "nn"})
+		newAgents = append(newAgents, &Agent{Lander: g.spawnPoint, policy: elites[i], agentType: "nn"})
 	}
 
 	// fill rest with children
@@ -569,8 +575,7 @@ func evolveNNAgents(g *Game, nnAgents []*Agent, r *mrand.Rand, mutationRate, mut
 				childNets[j].Mutate(mutationRate, mutationScale)
 			}
 		}
-		pos := Lander{x: r.Float64()*float64(screenWidth-40) + 20, y: r.Float64()*100 + 20}
-		newAgents = append(newAgents, &Agent{Lander: pos, policy: &NNPolicy{Nets: childNets}, agentType: "nn"})
+		newAgents = append(newAgents, &Agent{Lander: g.spawnPoint, policy: &NNPolicy{Nets: childNets}, agentType: "nn"})
 	}
 
 	return newAgents
@@ -663,14 +668,12 @@ func evolveRulebookAgents(g *Game, rulebookAgents []*Agent, r *mrand.Rand, mutat
 			break
 		}
 		rb := CloneRulebook(champ.Rulebook)
-		pos := Lander{x: r.Float64()*float64(screenWidth-40) + 20, y: r.Float64()*100 + 20}
-		newAgents = append(newAgents, &Agent{Lander: pos, policy: &RulebookPolicy{Rulebook: rb}, isChampion: true, agentType: "rulebook"})
+		newAgents = append(newAgents, &Agent{Lander: g.spawnPoint, policy: &RulebookPolicy{Rulebook: rb}, isChampion: true, agentType: "rulebook"})
 	}
 
 	// Then add current generation elites (exact clones, no mutation)
 	for i := 0; i < len(elites) && len(newAgents) < n; i++ {
-		pos := Lander{x: r.Float64()*float64(screenWidth-40) + 20, y: r.Float64()*100 + 20}
-		newAgents = append(newAgents, &Agent{Lander: pos, policy: elites[i], agentType: "rulebook"})
+		newAgents = append(newAgents, &Agent{Lander: g.spawnPoint, policy: elites[i], agentType: "rulebook"})
 	}
 
 	// fill rest with children
@@ -679,8 +682,7 @@ func evolveRulebookAgents(g *Game, rulebookAgents []*Agent, r *mrand.Rand, mutat
 		p2 := pickParent()
 		childRulebook := CrossoverRulebook(p1.Rulebook, p2.Rulebook)
 		MutateRulebook(&childRulebook, mutationRate, mutationScale)
-		pos := Lander{x: r.Float64()*float64(screenWidth-40) + 20, y: r.Float64()*100 + 20}
-		newAgents = append(newAgents, &Agent{Lander: pos, policy: &RulebookPolicy{Rulebook: childRulebook}, agentType: "rulebook"})
+		newAgents = append(newAgents, &Agent{Lander: g.spawnPoint, policy: &RulebookPolicy{Rulebook: childRulebook}, agentType: "rulebook"})
 	}
 
 	return newAgents

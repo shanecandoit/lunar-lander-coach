@@ -3,7 +3,6 @@ package main
 import (
 	"image/color"
 	"math"
-	"time"
 
 	"lunar-lander-coach/nn"
 	mrand "math/rand"
@@ -20,6 +19,7 @@ type Game struct {
 	hallOfFame         []*NNPolicy       // top 10 NN champions across all generations, never mutated
 	rulebookHallOfFame []*RulebookPolicy // top 10 rulebook champions across all generations, never mutated
 	paused             bool
+	spawnPoint         Lander // Starting position for all agents (S marker)
 	bodyImg            *ebiten.Image
 	flameImg           *ebiten.Image
 	// summary display
@@ -59,15 +59,13 @@ func NewGame(n int) *Game {
 		rulebookHallOfFame: make([]*RulebookPolicy, 0, 10),
 		totalLanded:        0,
 		totalAgents:        n,
+		spawnPoint:         Lander{x: float64(screenWidth / 2), y: 50}, // Top center
 	}
 
-	seedBase := time.Now().UnixNano()
 	// Create 100 NN agents
 	for i := 0; i < n; i++ {
-		rng := mrand.New(mrand.NewSource(seedBase + int64(i)*7919))
-		pos := Lander{x: rng.Float64()*float64(screenWidth-40) + 20, y: rng.Float64()*100 + 20}
 		a := &Agent{
-			Lander:    pos,
+			Lander:    g.spawnPoint,
 			policy:    &NNPolicy{Nets: [4]*nn.NNModule{nn.NewRandomNN(), nn.NewRandomNN(), nn.NewRandomNN(), nn.NewRandomNN()}},
 			agentType: "nn",
 		}
@@ -76,11 +74,9 @@ func NewGame(n int) *Game {
 
 	// Create 100 rulebook agents
 	for i := 0; i < n; i++ {
-		rng := mrand.New(mrand.NewSource(seedBase + int64(n+i)*7919))
-		pos := Lander{x: rng.Float64()*float64(screenWidth-40) + 20, y: rng.Float64()*100 + 20}
 		rb := NewRandomRulebook()
 		a := &Agent{
-			Lander:    pos,
+			Lander:    g.spawnPoint,
 			policy:    &RulebookPolicy{Rulebook: rb},
 			agentType: "rulebook",
 		}
@@ -96,8 +92,16 @@ func (g *Game) Update() error {
 		g.paused = !g.paused
 	}
 
-	// Handle mouse clicks when paused to add/remove coins
+	// Handle mouse clicks when paused
 	if g.paused {
+		// Handle middle mouse button to move spawn point
+		if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonMiddle) {
+			mx, my := ebiten.CursorPosition()
+			g.spawnPoint.x = float64(mx)
+			g.spawnPoint.y = float64(my)
+		}
+
+		// Handle left/right clicks to add/remove coins
 		if inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft) || inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonRight) {
 			mx, my := ebiten.CursorPosition()
 			isGreen := inpututil.IsMouseButtonJustPressed(ebiten.MouseButtonLeft)
