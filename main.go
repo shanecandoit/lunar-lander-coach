@@ -253,6 +253,11 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	}
 	ebitenutil.DebugPrintAt(screen, fmt.Sprintf("Total Landed: %d / %d (%.2f%%)  Coins: +%d  -%d  (L-click: green, R-click: red)", g.totalLanded, g.totalAgents, landedPercent, totalGreenCoins, totalRedCoins), 8, 460)
 
+	// Draw curriculum sliders when paused
+	if g.paused {
+		g.drawCurriculumSliders(screen)
+	}
+
 	// when all agents have finished, prepare and show a summary table
 	if allFinished && !g.summaryShown {
 		g.summaryLines = buildSummaryLines(scores, g.agents)
@@ -433,6 +438,8 @@ func (g *Game) evolvePopulation(mutationRate, mutationScale float32) {
 	g.generation++
 	// update total agents counter
 	g.totalAgents += len(newAgents)
+	// update curriculum difficulty for new generation
+	g.updateCurriculumDifficulty()
 }
 
 // evolveNNAgents handles evolution for NN agents
@@ -711,7 +718,7 @@ func aPolicyNets(p Policy) [4]*nn.NNModule {
 
 func main() {
 	ebiten.SetWindowSize(screenWidth, screenHeight)
-	ebiten.SetWindowTitle("Lunar Lander — 100 Agents")
+	ebiten.SetWindowTitle("Lunar Lander - 100 Agents")
 	g := NewGame(numAgents)
 	if err := ebiten.RunGame(g); err != nil {
 		log.Fatal(err)
