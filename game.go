@@ -88,8 +88,8 @@ func NewGame(n int) *Game {
 		endGravity:    endGravity,
 	}
 
-	// Create 100 NN agents
-	for i := 0; i < n; i++ {
+	// Create n/2 NN agents
+	for i := 0; i < n/2; i++ {
 		a := &Agent{
 			Lander:    g.spawnPoint,
 			policy:    &NNPolicy{Nets: [4]*nn.NNModule{nn.NewRandomNN(), nn.NewRandomNN(), nn.NewRandomNN(), nn.NewRandomNN()}},
@@ -98,8 +98,8 @@ func NewGame(n int) *Game {
 		g.agents = append(g.agents, a)
 	}
 
-	// Create 100 rulebook agents
-	for i := 0; i < n; i++ {
+	// Create n/2 rulebook agents
+	for i := 0; i < n/2; i++ {
 		rb := NewRandomRulebook()
 		a := &Agent{
 			Lander:    g.spawnPoint,

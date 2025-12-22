@@ -23,7 +23,7 @@ import (
 const (
 	screenWidth     = 640
 	screenHeight    = 480
-	numAgents       = 100
+	AGENT_NUM       = 1000
 	episodeMaxSteps = 400
 )
 
@@ -541,6 +541,17 @@ func evolveNNAgents(g *Game, nnAgents []*Agent, r *mrand.Rand, mutationRate, mut
 	// build new NN population
 	newAgents := make([]*Agent, 0, n)
 
+	// spawn point random walk offset
+	g.spawnPoint.x += r.Float64()*100 - 50
+	g.spawnPoint.y += r.Float64()*100 - 50
+	// clamp to screen bounds
+	if g.spawnPoint.x < 50 || g.spawnPoint.x > screenWidth-50 {
+		g.spawnPoint.x = screenWidth / 2
+	}
+	if g.spawnPoint.y < 50 || g.spawnPoint.y > screenHeight-150 {
+		g.spawnPoint.y = screenHeight / 4
+	}
+
 	// First, add hall of fame champions (guaranteed to compete, never mutated)
 	for _, champ := range g.hallOfFame {
 		if len(newAgents) >= n {
@@ -718,8 +729,8 @@ func aPolicyNets(p Policy) [4]*nn.NNModule {
 
 func main() {
 	ebiten.SetWindowSize(screenWidth, screenHeight)
-	ebiten.SetWindowTitle("Lunar Lander - 100 Agents")
-	g := NewGame(numAgents)
+	ebiten.SetWindowTitle("Lunar Lander — 1000 Agents")
+	g := NewGame(AGENT_NUM)
 	if err := ebiten.RunGame(g); err != nil {
 		log.Fatal(err)
 	}
